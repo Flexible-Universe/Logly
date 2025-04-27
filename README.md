@@ -68,6 +68,7 @@ You can define your own commonly used log categories in your app to simplify usa
 ```swift
 // MyApp+Logger.swift (inside your app target)
 
+import os
 import Logly
 
 extension Logger {
