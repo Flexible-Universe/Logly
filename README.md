@@ -57,10 +57,6 @@ LoggerConfiguration.asynchronousLogging = true
 
 ## 🧪 Usage
 
-Hier ist der ergänzte Abschnitt für die `README.md`:
-
----
-
 ### 🧩 Define Your Own Log Categories
 
 You can define your own commonly used log categories in your app to simplify usage:
