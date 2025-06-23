@@ -8,9 +8,11 @@
 import Foundation
 
 struct LogWriter {
-    static func write(_ message: String) {
-        let url = LoggerConfiguration.logFilePath
-        LogRotator.rotateIfNeeded(at: url)
+    /// Writes a log message to the configured log file asynchronously.
+    /// This function ensures log rotation is performed if needed before writing.
+    static func write(_ message: String) async {
+        let url = await LoggerConfiguration.shared.getLogFilePath()
+        await LogRotator.rotateIfNeeded(at: url)
 
         do {
             let fileHandle = try FileHandle(forWritingTo: url)

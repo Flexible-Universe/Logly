@@ -8,13 +8,13 @@
 import Foundation
 
 struct LogFormatter {
-    static func format(level: LogLevel, category: String, message: String, file: String, line: Int) -> String {
+    static func format(level: LogLevel, category: String, message: String, file: String, line: Int) async -> String {
         let timestamp = ISO8601DateFormatter().string(from: Date())
-        let levelFormatted = level.description.padding(toLength: LoggerConfiguration.logLevelWidth, withPad: " ", startingAt: 0)
-        let categoryFormatted = category.padding(toLength: LoggerConfiguration.categoryWidth, withPad: " ", startingAt: 0)
+        let levelFormatted = level.description.padding(toLength: await LoggerConfiguration.shared.getLogLevelWidth(), withPad: " ", startingAt: 0)
+        let categoryFormatted = category.padding(toLength: await LoggerConfiguration.shared.getCategoryWidth(), withPad: " ", startingAt: 0)
         let fileName = (file as NSString).lastPathComponent
 
-        var formattedMessage = LoggerConfiguration.logFormat
+        var formattedMessage = await LoggerConfiguration.shared.getLogFormat()
         formattedMessage = formattedMessage.replacingOccurrences(of: "{timestamp}", with: timestamp)
         formattedMessage = formattedMessage.replacingOccurrences(of: "{level}", with: levelFormatted)
         formattedMessage = formattedMessage.replacingOccurrences(of: "{category}", with: categoryFormatted)
