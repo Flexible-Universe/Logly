@@ -45,9 +45,7 @@ public enum LoggerCrashHandler {
             Stack trace:
             \(stack)
             """
-            Task {
-                await Logger.custom(category: "Crash").faultAsync(message)
-            }
+            Logger.custom(category: "Crash").fault(message)
         }
 
         // Register signal handlers using static C-compatible functions
@@ -76,65 +74,175 @@ private func signalHandler(signalValue: Int32) {
     }
 
     let message = "💥 Caught signal: \(signalName) (\(signalValue))"
-    Task {
-        await Logger.custom(category: "Signal").faultAsync(message)
-    }
+    Logger.custom(category: "Signal").fault(message)
 
     signal(signalValue, SIG_DFL)
     raise(signalValue)
 }
 
 // Configuration Module
-public actor LoggerConfiguration {
-    public static let shared = LoggerConfiguration()
-    private var currentLogLevel: LogLevel = .debug
-    private var logToFile: Bool = true
-    private var logFilePath: URL = FileManager.default.temporaryDirectory.appendingPathComponent("app_log.txt")
-    private var logLevelWidth: Int = 7
-    private var categoryWidth: Int = 12
-    private var logFormat: String = "{timestamp} - {level} - {category} - {file}:{line} - {message}"
-    private var asynchronousLogging: Bool = true
+public class LoggerConfiguration {
+    nonisolated(unsafe) public static let shared = LoggerConfiguration()
+    private let queue = DispatchQueue(label: "LoggerConfiguration", attributes: .concurrent)
+    
+    private var _currentLogLevel: LogLevel = .debug
+    private var _logToFile: Bool = true
+    private var _logFilePath: URL = FileManager.default.temporaryDirectory.appendingPathComponent("app_log.txt")
+    private var _logLevelWidth: Int = 7
+    private var _categoryWidth: Int = 12
+    private var _logFormat: String = "{timestamp} - {level} - {category} - {file}:{line} - {message}"
+    private var _asynchronousLogging: Bool = true
+    private var _maxFileSizeInBytes: Int64 = 5 * 1024 * 1024 // 5 MB
+    private var _maxLogAge: TimeInterval = 60 * 60 * 24 // 1 day
+    private var _maxRotatedFiles: Int = 5
+    private var _enableANSIColors: Bool = true
 
-    // Rotation
-    private var maxFileSizeInBytes: Int64 = 5 * 1024 * 1024 // 5 MB
-    private var maxLogAge: TimeInterval = 60 * 60 * 24 // 1 day
-    private var maxRotatedFiles: Int = 5
-    private var enableANSIColors: Bool = true
-
-    // Async getters and setters for each property
-
-    public func setCurrentLogLevel(_ value: LogLevel) async { self.currentLogLevel = value }
-    public func getCurrentLogLevel() async -> LogLevel { self.currentLogLevel }
-
-    public func setLogToFile(_ value: Bool) async { self.logToFile = value }
-    public func getLogToFile() async -> Bool { self.logToFile }
-
-    public func setLogFilePath(_ value: URL) async { self.logFilePath = value }
-    public func getLogFilePath() async -> URL { self.logFilePath }
-
-    public func setLogLevelWidth(_ value: Int) async { self.logLevelWidth = value }
-    public func getLogLevelWidth() async -> Int { self.logLevelWidth }
-
-    public func setCategoryWidth(_ value: Int) async { self.categoryWidth = value }
-    public func getCategoryWidth() async -> Int { self.categoryWidth }
-
-    public func setLogFormat(_ value: String) async { self.logFormat = value }
-    public func getLogFormat() async -> String { self.logFormat }
-
-    public func setAsynchronousLogging(_ value: Bool) async { self.asynchronousLogging = value }
-    public func getAsynchronousLogging() async -> Bool { self.asynchronousLogging }
-
-    public func setMaxFileSizeInBytes(_ value: Int64) async { self.maxFileSizeInBytes = value }
-    public func getMaxFileSizeInBytes() async -> Int64 { self.maxFileSizeInBytes }
-
-    public func setMaxLogAge(_ value: TimeInterval) async { self.maxLogAge = value }
-    public func getMaxLogAge() async -> TimeInterval { self.maxLogAge }
-
-    public func setMaxRotatedFiles(_ value: Int) async { self.maxRotatedFiles = value }
-    public func getMaxRotatedFiles() async -> Int { self.maxRotatedFiles }
-
-    public func setEnableANSIColors(_ value: Bool) async { self.enableANSIColors = value }
-    public func getEnableANSIColors() async -> Bool { self.enableANSIColors }
+    // Thread-safe properties with concurrent queue and barrier writes
+    
+    public var currentLogLevel: LogLevel {
+        get { queue.sync { _currentLogLevel } }
+        set { queue.async(flags: .barrier) { self._currentLogLevel = newValue } }
+    }
+    
+    public var logToFile: Bool {
+        get { queue.sync { _logToFile } }
+        set { queue.async(flags: .barrier) { self._logToFile = newValue } }
+    }
+    
+    public var logFilePath: URL {
+        get { queue.sync { _logFilePath } }
+        set { queue.async(flags: .barrier) { self._logFilePath = newValue } }
+    }
+    
+    public var logLevelWidth: Int {
+        get { queue.sync { _logLevelWidth } }
+        set { queue.async(flags: .barrier) { self._logLevelWidth = newValue } }
+    }
+    
+    public var categoryWidth: Int {
+        get { queue.sync { _categoryWidth } }
+        set { queue.async(flags: .barrier) { self._categoryWidth = newValue } }
+    }
+    
+    public var logFormat: String {
+        get { queue.sync { _logFormat } }
+        set { queue.async(flags: .barrier) { self._logFormat = newValue } }
+    }
+    
+    public var asynchronousLogging: Bool {
+        get { queue.sync { _asynchronousLogging } }
+        set { queue.async(flags: .barrier) { self._asynchronousLogging = newValue } }
+    }
+    
+    public var maxFileSizeInBytes: Int64 {
+        get { queue.sync { _maxFileSizeInBytes } }
+        set { queue.async(flags: .barrier) { self._maxFileSizeInBytes = newValue } }
+    }
+    
+    public var maxLogAge: TimeInterval {
+        get { queue.sync { _maxLogAge } }
+        set { queue.async(flags: .barrier) { self._maxLogAge = newValue } }
+    }
+    
+    public var maxRotatedFiles: Int {
+        get { queue.sync { _maxRotatedFiles } }
+        set { queue.async(flags: .barrier) { self._maxRotatedFiles = newValue } }
+    }
+    
+    public var enableANSIColors: Bool {
+        get { queue.sync { _enableANSIColors } }
+        set { queue.async(flags: .barrier) { self._enableANSIColors = newValue } }
+    }
+    
+    // MARK: - Async API for Swift Concurrency support
+    
+    public func setCurrentLogLevel(_ value: LogLevel) async { 
+        currentLogLevel = value 
+    }
+    
+    public func getCurrentLogLevel() async -> LogLevel { 
+        currentLogLevel 
+    }
+    
+    public func setLogToFile(_ value: Bool) async { 
+        logToFile = value 
+    }
+    
+    public func getLogToFile() async -> Bool { 
+        logToFile 
+    }
+    
+    public func setLogFilePath(_ value: URL) async { 
+        logFilePath = value 
+    }
+    
+    public func getLogFilePath() async -> URL { 
+        logFilePath 
+    }
+    
+    public func setLogLevelWidth(_ value: Int) async { 
+        logLevelWidth = value 
+    }
+    
+    public func getLogLevelWidth() async -> Int { 
+        logLevelWidth 
+    }
+    
+    public func setCategoryWidth(_ value: Int) async { 
+        categoryWidth = value 
+    }
+    
+    public func getCategoryWidth() async -> Int { 
+        categoryWidth 
+    }
+    
+    public func setLogFormat(_ value: String) async { 
+        logFormat = value 
+    }
+    
+    public func getLogFormat() async -> String { 
+        logFormat 
+    }
+    
+    public func setAsynchronousLogging(_ value: Bool) async { 
+        asynchronousLogging = value 
+    }
+    
+    public func getAsynchronousLogging() async -> Bool { 
+        asynchronousLogging 
+    }
+    
+    public func setMaxFileSizeInBytes(_ value: Int64) async { 
+        maxFileSizeInBytes = value 
+    }
+    
+    public func getMaxFileSizeInBytes() async -> Int64 { 
+        maxFileSizeInBytes 
+    }
+    
+    public func setMaxLogAge(_ value: TimeInterval) async { 
+        maxLogAge = value 
+    }
+    
+    public func getMaxLogAge() async -> TimeInterval { 
+        maxLogAge 
+    }
+    
+    public func setMaxRotatedFiles(_ value: Int) async { 
+        maxRotatedFiles = value 
+    }
+    
+    public func getMaxRotatedFiles() async -> Int { 
+        maxRotatedFiles 
+    }
+    
+    public func setEnableANSIColors(_ value: Bool) async { 
+        enableANSIColors = value 
+    }
+    
+    public func getEnableANSIColors() async -> Bool { 
+        enableANSIColors 
+    }
 }
 
 // Logger Category (Main API)
@@ -148,10 +256,10 @@ public struct LogCategory: Sendable {
         self.categoryName = category
     }
 
-    private func formattedLog(level: LogLevel, message: String, file: String, line: Int) async -> String {
-        let logFormat = await LoggerConfiguration.shared.getLogFormat()
-        let logLevelWidth = await LoggerConfiguration.shared.getLogLevelWidth()
-        let categoryWidth = await LoggerConfiguration.shared.getCategoryWidth()
+    private func formattedLog(level: LogLevel, message: String, file: String, line: Int) -> String {
+        let logFormat = LoggerConfiguration.shared.logFormat
+        let logLevelWidth = LoggerConfiguration.shared.logLevelWidth
+        let categoryWidth = LoggerConfiguration.shared.categoryWidth
 
         // Prepare formatted strings with widths if needed
         let timestamp = ISO8601DateFormatter().string(from: Date())
@@ -170,8 +278,8 @@ public struct LogCategory: Sendable {
         return formatted
     }
 
-    private func printFormatted(_ level: LogLevel, _ formattedMessage: String) async {
-        let enableColors = await LoggerConfiguration.shared.getEnableANSIColors()
+    private func printFormatted(_ level: LogLevel, _ formattedMessage: String) {
+        let enableColors = LoggerConfiguration.shared.enableANSIColors
         if enableColors {
             print("\(level.ansiColorCode)\(formattedMessage)\u{001B}[0m")
         } else {
@@ -179,69 +287,68 @@ public struct LogCategory: Sendable {
         }
     }
 
-    private func log(level: LogLevel, message: String, file: String, line: Int) async {
-        let currentLevel = await LoggerConfiguration.shared.getCurrentLogLevel()
+    private func log(level: LogLevel, message: String, file: String, line: Int) {
+        let currentLevel = LoggerConfiguration.shared.currentLogLevel
         guard level.rawValue >= currentLevel.rawValue else { return }
-        let asyncLogging = await LoggerConfiguration.shared.getAsynchronousLogging()
+        let asyncLogging = LoggerConfiguration.shared.asynchronousLogging
+        
         if asyncLogging {
             LogCategory.logQueue.async {
-                Task {
-                    let formattedMessage = await self.formattedLog(level: level, message: message, file: file, line: line)
-                    await self.printFormatted(level, formattedMessage)
-                    if await LoggerConfiguration.shared.getLogToFile() {
-                        await LogWriter.write(formattedMessage)
-                    }
+                let formattedMessage = self.formattedLog(level: level, message: message, file: file, line: line)
+                self.printFormatted(level, formattedMessage)
+                if LoggerConfiguration.shared.logToFile {
+                    LogWriter.write(formattedMessage)
                 }
             }
         } else {
-            let formattedMessage = await formattedLog(level: level, message: message, file: file, line: line)
-            await printFormatted(level, formattedMessage)
-            if await LoggerConfiguration.shared.getLogToFile() {
-                await LogWriter.write(formattedMessage)
+            let formattedMessage = formattedLog(level: level, message: message, file: file, line: line)
+            printFormatted(level, formattedMessage)
+            if LoggerConfiguration.shared.logToFile {
+                LogWriter.write(formattedMessage)
             }
         }
     }
 
+    public func debug(_ message: String, file: String = #file, line: Int = #line) {
+        log(level: .debug, message: message, file: file, line: line)
+    }
+
+    public func info(_ message: String, file: String = #file, line: Int = #line) {
+        log(level: .info, message: message, file: file, line: line)
+    }
+
+    public func warning(_ message: String, file: String = #file, line: Int = #line) {
+        log(level: .warning, message: message, file: file, line: line)
+    }
+
+    public func error(_ message: String, file: String = #file, line: Int = #line) {
+        log(level: .error, message: message, file: file, line: line)
+    }
+
+    public func fault(_ message: String, file: String = #file, line: Int = #line) {
+        log(level: .fault, message: message, file: file, line: line)
+    }
+    
+    // MARK: - Async versions for Swift Concurrency support
+    
     public func debug(_ message: String, file: String = #file, line: Int = #line) async {
-        await log(level: .debug, message: message, file: file, line: line)
+        log(level: .debug, message: message, file: file, line: line)
     }
 
     public func info(_ message: String, file: String = #file, line: Int = #line) async {
-        await log(level: .info, message: message, file: file, line: line)
+        log(level: .info, message: message, file: file, line: line)
     }
 
     public func warning(_ message: String, file: String = #file, line: Int = #line) async {
-        await log(level: .warning, message: message, file: file, line: line)
+        log(level: .warning, message: message, file: file, line: line)
     }
 
     public func error(_ message: String, file: String = #file, line: Int = #line) async {
-        await log(level: .error, message: message, file: file, line: line)
+        log(level: .error, message: message, file: file, line: line)
     }
 
     public func fault(_ message: String, file: String = #file, line: Int = #line) async {
-        await log(level: .fault, message: message, file: file, line: line)
-    }
-
-    // MARK: - Async versions (just call the async functions directly)
-
-    public func debugAsync(_ message: String, file: String = #file, line: Int = #line) async {
-        await debug(message, file: file, line: line)
-    }
-
-    public func infoAsync(_ message: String, file: String = #file, line: Int = #line) async {
-        await info(message, file: file, line: line)
-    }
-
-    public func warningAsync(_ message: String, file: String = #file, line: Int = #line) async {
-        await warning(message, file: file, line: line)
-    }
-
-    public func errorAsync(_ message: String, file: String = #file, line: Int = #line) async {
-        await error(message, file: file, line: line)
-    }
-
-    public func faultAsync(_ message: String, file: String = #file, line: Int = #line) async {
-        await fault(message, file: file, line: line)
+        log(level: .fault, message: message, file: file, line: line)
     }
 }
 

@@ -8,7 +8,7 @@
 import Foundation
 
 struct LogRotator {
-    static func rotateIfNeeded(at url: URL) async {
+    static func rotateIfNeeded(at url: URL) {
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: url.path) else { return }
 
@@ -16,7 +16,7 @@ struct LogRotator {
 
         if let attributes = try? fileManager.attributesOfItem(atPath: url.path),
            let fileSize = attributes[.size] as? Int64 {
-            let maxFileSize = await LoggerConfiguration.shared.getMaxFileSizeInBytes()
+            let maxFileSize = LoggerConfiguration.shared.maxFileSizeInBytes
             if fileSize >= maxFileSize {
                 shouldRotate = true
             }
@@ -25,7 +25,7 @@ struct LogRotator {
         if let attributes = try? fileManager.attributesOfItem(atPath: url.path),
            let creationDate = attributes[.creationDate] as? Date {
             let age = Date().timeIntervalSince(creationDate)
-            let maxLogAge = await LoggerConfiguration.shared.getMaxLogAge()
+            let maxLogAge = LoggerConfiguration.shared.maxLogAge
             if age >= maxLogAge {
                 shouldRotate = true
             }
@@ -36,14 +36,14 @@ struct LogRotator {
             let rotatedURL = url.deletingLastPathComponent().appendingPathComponent("\(url.deletingPathExtension().lastPathComponent)_\(dateString).log")
             do {
                 try fileManager.moveItem(at: url, to: rotatedURL)
-                await cleanUpOldLogFiles(directory: url.deletingLastPathComponent(), baseName: url.deletingPathExtension().lastPathComponent)
+                cleanUpOldLogFiles(directory: url.deletingLastPathComponent(), baseName: url.deletingPathExtension().lastPathComponent)
             } catch {
                 print("[Logger] Failed to rotate log file: \(error)")
             }
         }
     }
 
-    private static func cleanUpOldLogFiles(directory: URL, baseName: String) async {
+    private static func cleanUpOldLogFiles(directory: URL, baseName: String) {
         let fileManager = FileManager.default
         guard let files = try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.creationDateKey], options: []) else { return }
 
@@ -55,7 +55,7 @@ struct LogRotator {
             return date1 < date2
         }
 
-        let maxRotatedFiles = await LoggerConfiguration.shared.getMaxRotatedFiles()
+        let maxRotatedFiles = LoggerConfiguration.shared.maxRotatedFiles
         let excessCount = sortedFiles.count - maxRotatedFiles
         guard excessCount > 0 else { return }
 
