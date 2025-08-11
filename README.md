@@ -2,6 +2,27 @@
 
 A lightweight, modular, and concurrency-safe logging system for Swift projects. Designed for macOS and iOS applications, it supports log levels, structured formatting, log rotation, file output, asynchronous logging, and crash/signal handling – all configurable at runtime.
 
+> **Swift Package Documentation**: For complete API documentation with examples, build and browse the DocC documentation using `swift package generate-documentation --target Logly` or view it in Xcode.
+
+## Quick Start
+
+```swift
+import Logly
+
+// Basic setup
+let logger = Logger.custom(category: "MyApp")
+logger.info("Application started")
+
+// Configure for production
+let config = LoggerConfiguration.shared
+config.currentLogLevel = .warning
+config.logToFile = true
+config.logFilePath = documentsDirectory.appendingPathComponent("app.log")
+
+// Enable crash handling
+LoggerCrashHandler.install()
+```
+
 ---
 
 ## 🚀 Features
@@ -133,7 +154,7 @@ LoggerCrashHandler.install()
 
 ### 🧩 Define Your Own Log Categories
 
-You can define your own commonly used log categories in your app:
+Create organized logging categories for different parts of your application:
 
 ```swift
 // MyApp+Logger.swift (inside your app target)
@@ -145,6 +166,11 @@ extension Logger {
     static let network = Logger.custom(category: "Network")
     static let authentication = Logger.custom(category: "Authentication")
     static let database = Logger.custom(category: "Database")
+    static let ui = Logger.custom(category: "UI")
+    static let analytics = Logger.custom(
+        subsystem: "com.myapp.analytics",
+        category: "Events"
+    )
 }
 ```
 
@@ -192,6 +218,66 @@ await logger.error("Error occurred")
 await logger.fault("Critical fault")
 ```
 
+### Real-World Usage Examples
+
+#### Network Layer Logging
+
+```swift
+class APIClient {
+    private let logger = Logger.custom(category: "NetworkClient")
+    
+    func fetchData(from url: URL) async throws -> Data {
+        logger.info("Starting request to \(url.absoluteString)")
+        
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            
+            if let httpResponse = response as? HTTPURLResponse {
+                logger.info("Request completed with status \(httpResponse.statusCode)")
+                
+                if httpResponse.statusCode >= 400 {
+                    logger.error("HTTP error \(httpResponse.statusCode) for \(url)")
+                    throw APIError.httpError(httpResponse.statusCode)
+                }
+            }
+            
+            return data
+        } catch {
+            logger.error("Network request failed: \(error.localizedDescription)")
+            throw error
+        }
+    }
+}
+```
+
+#### Database Operations
+
+```swift
+class DataManager {
+    private let logger = Logger.custom(category: "Database")
+    
+    func saveUser(_ user: User) {
+        logger.debug("Attempting to save user with ID: \(user.id)")
+        
+        do {
+            try persistentContainer.viewContext.save()
+            logger.info("Successfully saved user: \(user.username)")
+        } catch {
+            logger.error("Failed to save user: \(error.localizedDescription)")
+            // Handle error...
+        }
+    }
+    
+    func migrateDatabase() {
+        logger.warning("Starting database migration - this may take a while")
+        
+        // Migration logic...
+        
+        logger.info("Database migration completed successfully")
+    }
+}
+```
+
 ### Thread Safety
 
 All logging operations are thread-safe and can be called from any queue:
@@ -209,6 +295,52 @@ DispatchQueue.main.async {
 // Also works in async contexts
 Task {
     await Logger.network.info("Async task completed")
+}
+```
+
+#### SwiftUI Integration
+
+```swift
+struct ContentView: View {
+    private let logger = Logger.custom(category: "UI")
+    @State private var isLoading = false
+    
+    var body: some View {
+        VStack {
+            if isLoading {
+                ProgressView("Loading...")
+                    .onAppear {
+                        logger.debug("Loading indicator appeared")
+                    }
+            } else {
+                Text("Content loaded")
+                    .onAppear {
+                        logger.info("Content view displayed")
+                    }
+            }
+        }
+        .task {
+            await loadData()
+        }
+    }
+    
+    private func loadData() async {
+        logger.info("Starting data load")
+        isLoading = true
+        
+        defer {
+            isLoading = false
+            logger.debug("Data loading completed, UI updated")
+        }
+        
+        do {
+            // Simulate async work
+            try await Task.sleep(for: .seconds(2))
+            await logger.info("Data loaded successfully")
+        } catch {
+            await logger.error("Failed to load data: \(error)")
+        }
+    }
 }
 ```
 
@@ -386,6 +518,187 @@ config.logFilePath = logsDirectory.appendingPathComponent("app.log")
 
 // Or async version
 await config.setLogFilePath(logsDirectory.appendingPathComponent("app.log"))
+```
+
+#### Environment-Specific Configuration
+
+```swift
+class LoggingSetup {
+    static func configure() {
+        let config = LoggerConfiguration.shared
+        
+        #if DEBUG
+        // Development settings
+        config.currentLogLevel = .debug
+        config.enableANSIColors = true
+        config.logToFile = true
+        
+        // Use Documents directory for easy access during development
+        let documentsPath = FileManager.default
+            .urls(for: .documentDirectory, in: .userDomainMask)[0]
+        config.logFilePath = documentsPath.appendingPathComponent("debug.log")
+        
+        #elseif TESTING
+        // Testing settings - minimal logging
+        config.currentLogLevel = .error
+        config.logToFile = false
+        config.enableANSIColors = false
+        
+        #else
+        // Production settings
+        config.currentLogLevel = .warning
+        config.enableANSIColors = false
+        config.asynchronousLogging = true
+        
+        // Use Application Support directory for production logs
+        let appSupportPath = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(Bundle.main.bundleIdentifier ?? "MyApp")
+            .appendingPathComponent("Logs")
+        
+        // Ensure directory exists
+        try? FileManager.default.createDirectory(
+            at: appSupportPath,
+            withIntermediateDirectories: true
+        )
+        
+        config.logFilePath = appSupportPath.appendingPathComponent("production.log")
+        
+        // Stricter rotation for production
+        config.maxFileSizeInBytes = 2 * 1024 * 1024  // 2MB
+        config.maxLogAge = 60 * 60 * 12               // 12 hours
+        config.maxRotatedFiles = 10
+        #endif
+        
+        // Always install crash handler
+        LoggerCrashHandler.install()
+    }
+}
+```
+
+---
+
+## 📚 Documentation
+
+### DocC Documentation
+
+Generate comprehensive documentation with code examples:
+
+```bash
+# Generate documentation
+swift package generate-documentation --target Logly
+
+# Preview documentation
+swift package --disable-sandbox preview-documentation --target Logly
+```
+
+### Xcode Documentation
+
+1. Open your project in Xcode
+2. Go to **Product → Build Documentation**
+3. Browse the documentation in Xcode's Documentation window
+
+### Key Documentation Topics
+
+- **Getting Started**: Quick setup and basic usage
+- **Configuration**: Detailed configuration options and examples
+- **Log Levels**: Understanding severity levels and filtering
+- **File Management**: Log rotation, cleanup, and storage
+- **Async Support**: Using Logly with Swift Concurrency
+- **Performance**: Optimization tips and best practices
+- **Troubleshooting**: Common issues and solutions
+
+---
+
+## 🔧 Advanced Usage
+
+### Custom Formatting for Different Environments
+
+```swift
+func setupCustomFormatting() {
+    let config = LoggerConfiguration.shared
+    
+    #if DEBUG
+    // Detailed format for development
+    config.logFormat = "[{timestamp}] {level} {category} {file}:{line} - {message}"
+    config.logLevelWidth = 8
+    config.categoryWidth = 15
+    #else
+    // Concise format for production
+    config.logFormat = "{timestamp} {level} {message}"
+    config.logLevelWidth = 5
+    #endif
+}
+```
+
+### Performance Monitoring Integration
+
+```swift
+class PerformanceLogger {
+    private let logger = Logger.custom(category: "Performance")
+    
+    func measureAndLog<T>(_ operation: String, _ block: () throws -> T) rethrows -> T {
+        let startTime = CFAbsoluteTimeGetCurrent()
+        logger.debug("Starting operation: \(operation)")
+        
+        let result = try block()
+        
+        let duration = CFAbsoluteTimeGetCurrent() - startTime
+        
+        if duration > 1.0 {
+            logger.warning("Slow operation '\(operation)' took \(String(format: "%.2f", duration))s")
+        } else {
+            logger.info("Operation '\(operation)' completed in \(String(format: "%.2f", duration))s")
+        }
+        
+        return result
+    }
+}
+
+// Usage
+let performanceLogger = PerformanceLogger()
+let result = performanceLogger.measureAndLog("Database query") {
+    return database.fetchUsers()
+}
+```
+
+### Log Analysis and Monitoring
+
+```swift
+class LogAnalyzer {
+    static func extractCriticalErrors(from logFile: URL) -> [String] {
+        guard let content = try? String(contentsOf: logFile) else {
+            return []
+        }
+        
+        return content
+            .components(separatedBy: .newlines)
+            .filter { line in
+                line.contains("ERROR") || line.contains("FAULT")
+            }
+    }
+    
+    static func getLogFileURLs() -> [URL] {
+        let config = LoggerConfiguration.shared
+        let logDirectory = config.logFilePath.deletingLastPathComponent()
+        
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: logDirectory,
+            includingPropertiesForKeys: [.creationDateKey],
+            options: []
+        ) else {
+            return []
+        }
+        
+        return files
+            .filter { $0.pathExtension == "log" }
+            .sorted { file1, file2 in
+                let date1 = (try? file1.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date.distantPast
+                let date2 = (try? file2.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date.distantPast
+                return date1 > date2
+            }
+    }
+}
 ```
 
 ---
