@@ -9,3 +9,6 @@ DerivedData/
 .netrc
 vendor/**
 jazzy-docs/**
+# Library package: the resolved graph is not consumer-facing. Committing it
+# would pin the trait-on (sentry-cocoa) graph and break the no-trait CI guard.
+Package.resolved

@@ -1047,6 +1047,8 @@ public class LoggerConfiguration {
     private var _maxLogAge: TimeInterval = 60 * 60 * 24 // 1 day
     private var _maxRotatedFiles: Int = 5
     private var _enableANSIColors: Bool = true
+    private var _sentryURL: String? = nil
+    private var _sinks: [LogSink] = []
 
     // MARK: - Synchronous Configuration Properties
     
@@ -1363,7 +1365,32 @@ public class LoggerConfiguration {
         get { queue.sync { _enableANSIColors } }
         set { queue.async(flags: .barrier) { self._enableANSIColors = newValue } }
     }
-    
+
+    /// Optional Sentry DSN. When set (non-empty), `LoglySentry.bootstrap()`
+    /// activates Sentry; when `nil`/empty, Sentry stays disabled.
+    ///
+    /// The core only stores this string — it has no Sentry dependency.
+    public var sentryURL: String? {
+        get { queue.sync { _sentryURL } }
+        set { queue.async(flags: .barrier) { self._sentryURL = newValue } }
+    }
+
+    /// The registered log sinks. Read-only; mutate via ``addSink(_:)`` /
+    /// ``removeAllSinks()``.
+    public var sinks: [LogSink] {
+        queue.sync { _sinks }
+    }
+
+    /// Registers a sink that receives every log event at or above the current level.
+    public func addSink(_ sink: LogSink) {
+        queue.async(flags: .barrier) { self._sinks.append(sink) }
+    }
+
+    /// Removes all registered sinks.
+    public func removeAllSinks() {
+        queue.async(flags: .barrier) { self._sinks.removeAll() }
+    }
+
     // MARK: - Asynchronous Configuration API
     
     /// Asynchronous variants of all configuration properties for use in async contexts.
@@ -1484,8 +1511,18 @@ public class LoggerConfiguration {
         enableANSIColors = value 
     }
     
-    public func getEnableANSIColors() async -> Bool { 
-        enableANSIColors 
+    public func getEnableANSIColors() async -> Bool {
+        enableANSIColors
+    }
+
+    /// Asynchronously sets the Sentry DSN.
+    public func setSentryURL(_ value: String?) async {
+        sentryURL = value
+    }
+
+    /// Asynchronously retrieves the Sentry DSN.
+    public func getSentryURL() async -> String? {
+        sentryURL
     }
 }
 
@@ -1939,11 +1976,21 @@ public struct LogCategory: Sendable {
         }
     }
 
-    private func log(level: LogLevel, message: String, file: String, line: Int) {
+    private func log(level: LogLevel, message: String, error: (any Error)? = nil, file: String, line: Int) {
         let currentLevel = LoggerConfiguration.shared.currentLogLevel
         guard level.rawValue >= currentLevel.rawValue else { return }
         let asyncLogging = LoggerConfiguration.shared.asynchronousLogging
-        
+        let sinks = LoggerConfiguration.shared.sinks
+        let event = LogEvent(
+            level: level,
+            category: categoryName,
+            message: message,
+            error: error,
+            file: file,
+            line: line,
+            timestamp: Date()
+        )
+
         if asyncLogging {
             LogCategory.logQueue.async {
                 let formattedMessage = self.formattedLog(level: level, message: message, file: file, line: line)
@@ -1951,6 +1998,7 @@ public struct LogCategory: Sendable {
                 if LoggerConfiguration.shared.logToFile {
                     LogWriter.write(formattedMessage)
                 }
+                for sink in sinks { sink.emit(event) }
             }
         } else {
             let formattedMessage = formattedLog(level: level, message: message, file: file, line: line)
@@ -1958,6 +2006,7 @@ public struct LogCategory: Sendable {
             if LoggerConfiguration.shared.logToFile {
                 LogWriter.write(formattedMessage)
             }
+            for sink in sinks { sink.emit(event) }
         }
     }
 
@@ -2041,8 +2090,8 @@ public struct LogCategory: Sendable {
     /// logger.error("Failed to save user preferences: \(error.localizedDescription)")
     /// logger.error("Network request failed with status code \(statusCode)")
     /// ```
-    public func error(_ message: String, file: String = #file, line: Int = #line) {
-        log(level: .error, message: message, file: file, line: line)
+    public func error(_ message: String, error: (any Error)? = nil, file: String = #file, line: Int = #line) {
+        log(level: .error, message: message, error: error, file: file, line: line)
     }
 
     /// Logs a fault message.
@@ -2062,8 +2111,8 @@ public struct LogCategory: Sendable {
     /// logger.fault("Critical database corruption detected")
     /// logger.fault("Unrecoverable memory allocation failure")
     /// ```
-    public func fault(_ message: String, file: String = #file, line: Int = #line) {
-        log(level: .fault, message: message, file: file, line: line)
+    public func fault(_ message: String, error: (any Error)? = nil, file: String = #file, line: Int = #line) {
+        log(level: .fault, message: message, error: error, file: file, line: line)
     }
     
     // MARK: - Asynchronous Logging Methods
@@ -2121,8 +2170,8 @@ public struct LogCategory: Sendable {
     ///   - message: The message to log
     ///   - file: The source file name (automatically captured)
     ///   - line: The source line number (automatically captured)
-    public func error(_ message: String, file: String = #file, line: Int = #line) async {
-        log(level: .error, message: message, file: file, line: line)
+    public func error(_ message: String, error: (any Error)? = nil, file: String = #file, line: Int = #line) async {
+        log(level: .error, message: message, error: error, file: file, line: line)
     }
 
     /// Asynchronously logs a fault message.
@@ -2134,8 +2183,8 @@ public struct LogCategory: Sendable {
     ///   - message: The message to log
     ///   - file: The source file name (automatically captured)
     ///   - line: The source line number (automatically captured)
-    public func fault(_ message: String, file: String = #file, line: Int = #line) async {
-        log(level: .fault, message: message, file: file, line: line)
+    public func fault(_ message: String, error: (any Error)? = nil, file: String = #file, line: Int = #line) async {
+        log(level: .fault, message: message, error: error, file: file, line: line)
     }
 }
 

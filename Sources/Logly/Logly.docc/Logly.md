@@ -83,3 +83,4 @@ Logly provides a ``LogCategory`` structure that wraps Apple's `os.Logger` with a
 - <doc:LogRotation>
 - <doc:CrashHandling>
 - <doc:PerformanceOptimization>
+- <doc:SentryIntegration>

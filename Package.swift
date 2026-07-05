@@ -10,19 +10,38 @@ let package = Package(
         .macOS(.v13),
     ],
     products: [
-        // Products define the executables and libraries a package produces, making them visible to other packages.
         .library(
             name: "Logly",
             targets: ["Logly"]),
+        .library(
+            name: "LoglySentry",
+            targets: ["LoglySentry"]),
+    ],
+    traits: [
+        .trait(
+            name: "Sentry",
+            description: "Enables the LoglySentry Sentry backend and its sentry-cocoa dependency."),
+    ],
+    dependencies: [
+        .package(url: "https://github.com/getsentry/sentry-cocoa", from: "8.0.0"),
     ],
     targets: [
-        // Targets are the basic building blocks of a package, defining a module or a test suite.
-        // Targets can depend on other targets in this package and products from dependencies.
         .target(
             name: "Logly"),
+        .target(
+            name: "LoglySentry",
+            dependencies: [
+                "Logly",
+                .product(name: "Sentry", package: "sentry-cocoa",
+                         condition: .when(traits: ["Sentry"])),
+            ]),
         .testTarget(
             name: "LoglyTests",
             dependencies: ["Logly"]
+        ),
+        .testTarget(
+            name: "LoglySentryTests",
+            dependencies: ["LoglySentry"]
         ),
     ]
 )

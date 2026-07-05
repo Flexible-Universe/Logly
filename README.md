@@ -38,6 +38,7 @@ LoggerCrashHandler.install()
 - ✅ **Thread-safe configuration** with concurrent queue design
 - ✅ **Dual API**: Both synchronous and async/await support
 - ✅ **Modular Swift Package** design for easy integration
+- ✅ **Optional Sentry transport** (`LoglySentry`): remote crash & error reporting, trait-gated so the core stays dependency-free
 
 ---
 
@@ -54,6 +55,8 @@ LoggerCrashHandler.install()
 
 - iOS 16.0+ or macOS 13.0+
 - Swift 6.1+
+
+> **Optional Sentry backend:** to also use the `LoglySentry` remote transport, enable the `Sentry` package trait when you declare the dependency (see [Sentry Integration](#-sentry-integration-optional)). Logly-only consumers never fetch `sentry-cocoa`.
 
 ---
 
@@ -423,6 +426,68 @@ This will automatically log:
 - **System signals** (SIGABRT, SIGILL, SIGSEGV, SIGFPE, SIGBUS, SIGPIPE)
 
 Crash logs are written to a special "Crash" and "Signal" category.
+
+---
+
+## 📡 Sentry Integration (Optional)
+
+Logly ships an optional `LoglySentry` product that forwards your logs and crashes to [Sentry](https://sentry.io) as a thin remote transport over the existing logging structure. The core `Logly` library stays dependency-free — `sentry-cocoa` is only pulled in when you enable the `Sentry` package trait.
+
+### Enable the package trait
+
+`LoglySentry` lives behind the `Sentry` package trait (off by default), so Logly-only consumers never fetch `sentry-cocoa`. Enable the trait where you declare the dependency:
+
+```swift
+.package(url: "https://github.com/Flexible-Universe/Logly", from: "x.y.z",
+         traits: ["Sentry"])
+```
+
+### Activate
+
+Activation is driven entirely by the configured Sentry URL (DSN). Set it and call `bootstrap()` once at startup — with a URL, Sentry is on; leave it `nil`/empty and the call is a complete no-op (Sentry disabled):
+
+```swift
+import Logly
+import LoglySentry
+
+LoggerConfiguration.shared.sentryURL = "https://…@sentry.io/123"  // or nil
+LoglySentry.bootstrap(scrub: Redaction.scrub)                     // scrub is optional
+```
+
+`bootstrap()` starts the Sentry SDK with the crash handler enabled and registers a sink. It is idempotent.
+
+> **Crash handling:** when Sentry is active it owns crash reporting (`enableCrashHandler = true`). Do **not** also call `LoggerCrashHandler.install()` — two handlers would fight over the same POSIX signals.
+
+### Attach the underlying error
+
+Pass the real `Error` so Sentry produces grouped exception events instead of plain message events:
+
+```swift
+do {
+    try store.save()
+} catch {
+    Logger.database.error("Saving failed", error: error)   // → Sentry exception
+}
+```
+
+Existing calls without an error keep working and become message events.
+
+### Level mapping
+
+| Logly level | Sentry |
+|---|---|
+| `.fault` | captured exception (with `Error`) or fatal message event |
+| `.error` | captured exception (with `Error`) or error message event |
+| `.warning` | breadcrumb (warning) |
+| `.info` / `.debug` | breadcrumb (info) |
+
+Breadcrumbs give every captured error the context of the preceding log lines.
+
+### Privacy (GDPR)
+
+Supply an app-specific `scrub` closure — it is wired to Sentry's `beforeSend` and must strip PII (personal data, file paths, tokens) before events are sent. Defaults are privacy-conservative: `sendDefaultPii = false`, `tracesSampleRate = 0`. Choose an EU data region in Sentry.
+
+See the `SentryIntegration` DocC article for the full guide.
 
 ---
 
