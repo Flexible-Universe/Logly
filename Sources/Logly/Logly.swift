@@ -893,36 +893,35 @@ private func signalHandler(signalValue: Int32) {
 /// Central configuration hub for all Logly logging system settings and behavior.
 /// 
 /// `LoggerConfiguration` serves as the single source of truth for logging behavior across
-/// your entire application. It implements a thread-safe singleton pattern with advanced
-/// concurrency control, supporting both traditional synchronous configuration and modern
-/// Swift Concurrency patterns.
-/// 
+/// your entire application. It implements a thread-safe singleton pattern, supporting both
+/// traditional synchronous configuration and modern Swift Concurrency patterns.
+///
 /// ## Architecture Overview
-/// 
+///
 /// The configuration system is built on several key architectural principles:
-/// 
+///
 /// ### Thread-Safe Singleton Pattern
 /// - **Global Access**: Single `shared` instance accessible from anywhere in your app
-/// - **Thread Safety**: All operations are thread-safe using concurrent queues
-/// - **Performance**: Optimized for high-frequency reads with minimal write contention
+/// - **Thread Safety**: All operations are protected by a single unfair lock
+/// - **Performance**: Lock acquisition is a lightweight kernel futex, not a GCD queue hop
 /// - **Memory Efficiency**: Lazy initialization and efficient property storage
-/// 
-/// ### Concurrent Queue Architecture
-/// 
+///
+/// ### Lock-Based Architecture
+///
 /// ```swift
-/// private let queue = DispatchQueue(label: "LoggerConfiguration", attributes: .concurrent)
-/// 
-/// // Read operations: Multiple concurrent readers
+/// private let lock = OSAllocatedUnfairLock(initialState: State())
+///
 /// public var currentLogLevel: LogLevel {
-///     get { queue.sync { _currentLogLevel } }  // Fast concurrent read
-///     set { queue.async(flags: .barrier) { self._currentLogLevel = newValue } }  // Exclusive write
+///     get { lock.withLock { $0.currentLogLevel } }
+///     set { lock.withLock { $0.currentLogLevel = newValue } }
 /// }
 /// ```
-/// 
+///
 /// This pattern allows:
-/// - **Multiple Readers**: Concurrent access for reading configuration
-/// - **Exclusive Writers**: Barrier writes ensure atomicity and consistency
-/// - **No Blocking**: Readers never block each other, writers don't block readers unnecessarily
+/// - **Bounded Blocking**: Waiting threads park on a futex instead of consuming a GCD
+///   worker thread, so contention cannot exhaust the global dispatch thread pool
+/// - **Atomicity**: All state lives in a single `State` struct guarded by one lock,
+///   so callers never observe a partially-updated configuration
 /// 
 /// ### Dual API Architecture
 /// 
@@ -1064,23 +1063,26 @@ private func signalHandler(signalValue: Int32) {
 /// - Performance optimization through level filtering
 /// - File management and rotation
 /// - Thread-safe multi-threaded applications
-public class LoggerConfiguration {
-    nonisolated(unsafe) public static let shared = LoggerConfiguration()
-    private let queue = DispatchQueue(label: "LoggerConfiguration", attributes: .concurrent)
-    
-    private var _currentLogLevel: LogLevel = .debug
-    private var _logToFile: Bool = true
-    private var _logFilePath: URL = FileManager.default.temporaryDirectory.appendingPathComponent("app_log.txt")
-    private var _logLevelWidth: Int = 7
-    private var _categoryWidth: Int = 12
-    private var _logFormat: String = "{timestamp} - {level} - {category} - {file}:{line} - {message}"
-    private var _asynchronousLogging: Bool = true
-    private var _maxFileSizeInBytes: Int64 = 5 * 1024 * 1024 // 5 MB
-    private var _maxLogAge: TimeInterval = 60 * 60 * 24 // 1 day
-    private var _maxRotatedFiles: Int = 5
-    private var _enableANSIColors: Bool = true
-    private var _sentryURL: String? = nil
-    private var _sinks: [LogSink] = []
+public class LoggerConfiguration: @unchecked Sendable {
+    public static let shared = LoggerConfiguration()
+
+    fileprivate struct State {
+        var currentLogLevel: LogLevel = .debug
+        var logToFile: Bool = true
+        var logFilePath: URL = FileManager.default.temporaryDirectory.appendingPathComponent("app_log.txt")
+        var logLevelWidth: Int = 7
+        var categoryWidth: Int = 12
+        var logFormat: String = "{timestamp} - {level} - {category} - {file}:{line} - {message}"
+        var asynchronousLogging: Bool = true
+        var maxFileSizeInBytes: Int64 = 5 * 1024 * 1024 // 5 MB
+        var maxLogAge: TimeInterval = 60 * 60 * 24 // 1 day
+        var maxRotatedFiles: Int = 5
+        var enableANSIColors: Bool = true
+        var sentryURL: String? = nil
+        var sinks: [LogSink] = []
+    }
+
+    fileprivate let lock = OSAllocatedUnfairLock(initialState: State())
 
     // MARK: - Synchronous Configuration Properties
     
@@ -1108,8 +1110,8 @@ public class LoggerConfiguration {
     /// 
     /// - Default: `.debug` (all messages processed)
     public var currentLogLevel: LogLevel {
-        get { queue.sync { _currentLogLevel } }
-        set { queue.async(flags: .barrier) { self._currentLogLevel = newValue } }
+        get { lock.withLock { $0.currentLogLevel } }
+        set { lock.withLock { $0.currentLogLevel = newValue } }
     }
     
     /// Controls whether log messages are written to a file.
@@ -1134,8 +1136,8 @@ public class LoggerConfiguration {
     /// - Default: `true`
     /// - SeeAlso: ``logFilePath``, ``maxFileSizeInBytes``, ``maxLogAge``
     public var logToFile: Bool {
-        get { queue.sync { _logToFile } }
-        set { queue.async(flags: .barrier) { self._logToFile = newValue } }
+        get { lock.withLock { $0.logToFile } }
+        set { lock.withLock { $0.logToFile = newValue } }
     }
     
     /// The file system location where log messages are written.
@@ -1164,8 +1166,8 @@ public class LoggerConfiguration {
     /// - Default: Temporary directory with name "app_log.txt"
     /// - SeeAlso: ``logToFile``, ``maxRotatedFiles``
     public var logFilePath: URL {
-        get { queue.sync { _logFilePath } }
-        set { queue.async(flags: .barrier) { self._logFilePath = newValue } }
+        get { lock.withLock { $0.logFilePath } }
+        set { lock.withLock { $0.logFilePath = newValue } }
     }
     
     /// The fixed width for log level strings in formatted output.
@@ -1187,8 +1189,8 @@ public class LoggerConfiguration {
     /// - Default: `7`
     /// - SeeAlso: ``categoryWidth``, ``logFormat``
     public var logLevelWidth: Int {
-        get { queue.sync { _logLevelWidth } }
-        set { queue.async(flags: .barrier) { self._logLevelWidth = newValue } }
+        get { lock.withLock { $0.logLevelWidth } }
+        set { lock.withLock { $0.logLevelWidth = newValue } }
     }
     
     /// The fixed width for category names in formatted output.
@@ -1212,8 +1214,8 @@ public class LoggerConfiguration {
     /// - Default: `12`
     /// - SeeAlso: ``logLevelWidth``, ``logFormat``
     public var categoryWidth: Int {
-        get { queue.sync { _categoryWidth } }
-        set { queue.async(flags: .barrier) { self._categoryWidth = newValue } }
+        get { lock.withLock { $0.categoryWidth } }
+        set { lock.withLock { $0.categoryWidth = newValue } }
     }
     
     /// The template string used to format log messages.
@@ -1244,8 +1246,8 @@ public class LoggerConfiguration {
     /// 
     /// - Default: `"{timestamp} - {level} - {category} - {file}:{line} - {message}"`
     public var logFormat: String {
-        get { queue.sync { _logFormat } }
-        set { queue.async(flags: .barrier) { self._logFormat = newValue } }
+        get { lock.withLock { $0.logFormat } }
+        set { lock.withLock { $0.logFormat = newValue } }
     }
     
     /// Controls whether log operations are performed asynchronously.
@@ -1275,8 +1277,8 @@ public class LoggerConfiguration {
     /// 
     /// - Default: `true`
     public var asynchronousLogging: Bool {
-        get { queue.sync { _asynchronousLogging } }
-        set { queue.async(flags: .barrier) { self._asynchronousLogging = newValue } }
+        get { lock.withLock { $0.asynchronousLogging } }
+        set { lock.withLock { $0.asynchronousLogging = newValue } }
     }
     
     /// The maximum size in bytes before a log file is rotated.
@@ -1301,8 +1303,8 @@ public class LoggerConfiguration {
     /// - Default: `5242880` (5 MB)
     /// - SeeAlso: ``maxLogAge``, ``maxRotatedFiles``
     public var maxFileSizeInBytes: Int64 {
-        get { queue.sync { _maxFileSizeInBytes } }
-        set { queue.async(flags: .barrier) { self._maxFileSizeInBytes = newValue } }
+        get { lock.withLock { $0.maxFileSizeInBytes } }
+        set { lock.withLock { $0.maxFileSizeInBytes = newValue } }
     }
     
     /// The maximum age in seconds before a log file is rotated.
@@ -1327,8 +1329,8 @@ public class LoggerConfiguration {
     /// - Default: `86400` (24 hours)
     /// - SeeAlso: ``maxFileSizeInBytes``, ``maxRotatedFiles``
     public var maxLogAge: TimeInterval {
-        get { queue.sync { _maxLogAge } }
-        set { queue.async(flags: .barrier) { self._maxLogAge = newValue } }
+        get { lock.withLock { $0.maxLogAge } }
+        set { lock.withLock { $0.maxLogAge = newValue } }
     }
     
     /// The maximum number of rotated log files to retain.
@@ -1354,8 +1356,8 @@ public class LoggerConfiguration {
     /// - Default: `5`
     /// - SeeAlso: ``maxFileSizeInBytes``, ``maxLogAge``
     public var maxRotatedFiles: Int {
-        get { queue.sync { _maxRotatedFiles } }
-        set { queue.async(flags: .barrier) { self._maxRotatedFiles = newValue } }
+        get { lock.withLock { $0.maxRotatedFiles } }
+        set { lock.withLock { $0.maxRotatedFiles = newValue } }
     }
     
     /// Controls whether ANSI color codes are used in console output.
@@ -1394,8 +1396,8 @@ public class LoggerConfiguration {
     /// - Default: `true`
     /// - Note: Colors only affect console output, not file output
     public var enableANSIColors: Bool {
-        get { queue.sync { _enableANSIColors } }
-        set { queue.async(flags: .barrier) { self._enableANSIColors = newValue } }
+        get { lock.withLock { $0.enableANSIColors } }
+        set { lock.withLock { $0.enableANSIColors = newValue } }
     }
 
     /// Optional Sentry DSN. When set (non-empty), `LoglySentry.bootstrap()`
@@ -1403,24 +1405,24 @@ public class LoggerConfiguration {
     ///
     /// The core only stores this string — it has no Sentry dependency.
     public var sentryURL: String? {
-        get { queue.sync { _sentryURL } }
-        set { queue.async(flags: .barrier) { self._sentryURL = newValue } }
+        get { lock.withLock { $0.sentryURL } }
+        set { lock.withLock { $0.sentryURL = newValue } }
     }
 
     /// The registered log sinks. Read-only; mutate via ``addSink(_:)`` /
     /// ``removeAllSinks()``.
     public var sinks: [LogSink] {
-        queue.sync { _sinks }
+        lock.withLock { $0.sinks }
     }
 
     /// Registers a sink that receives every log event at or above the current level.
     public func addSink(_ sink: LogSink) {
-        queue.async(flags: .barrier) { self._sinks.append(sink) }
+        lock.withLock { $0.sinks.append(sink) }
     }
 
     /// Removes all registered sinks.
     public func removeAllSinks() {
-        queue.async(flags: .barrier) { self._sinks.removeAll() }
+        lock.withLock { $0.sinks.removeAll() }
     }
 
     // MARK: - Asynchronous Configuration API
@@ -1977,19 +1979,15 @@ public struct LogCategory: Sendable {
         self.categoryName = category
     }
 
-    private func formattedLog(level: LogLevel, message: String, file: String, line: Int) -> String {
-        let logFormat = LoggerConfiguration.shared.logFormat
-        let logLevelWidth = LoggerConfiguration.shared.logLevelWidth
-        let categoryWidth = LoggerConfiguration.shared.categoryWidth
-
+    private func formattedLog(level: LogLevel, message: String, file: String, line: Int, settings: LogSettingsSnapshot) -> String {
         // Prepare formatted strings with widths if needed
         let timestamp = ISO8601DateFormatter().string(from: Date())
-        let levelString = level.description.padding(toLength: logLevelWidth, withPad: " ", startingAt: 0)
-        let categoryString = categoryName.padding(toLength: categoryWidth, withPad: " ", startingAt: 0)
+        let levelString = level.description.padding(toLength: settings.logLevelWidth, withPad: " ", startingAt: 0)
+        let categoryString = categoryName.padding(toLength: settings.categoryWidth, withPad: " ", startingAt: 0)
         let fileName = (file as NSString).lastPathComponent
 
         // Replace tokens in format string
-        var formatted = logFormat
+        var formatted = settings.logFormat
         formatted = formatted.replacingOccurrences(of: "{timestamp}", with: timestamp)
         formatted = formatted.replacingOccurrences(of: "{level}", with: levelString)
         formatted = formatted.replacingOccurrences(of: "{category}", with: categoryString)
@@ -1999,20 +1997,40 @@ public struct LogCategory: Sendable {
         return formatted
     }
 
-    private func printFormatted(_ level: LogLevel, _ formattedMessage: String) {
-        let enableColors = LoggerConfiguration.shared.enableANSIColors
-        if enableColors {
+    private func printFormatted(_ level: LogLevel, _ formattedMessage: String, settings: LogSettingsSnapshot) {
+        if settings.enableANSIColors {
             print("\(level.ansiColorCode)\(formattedMessage)\u{001B}[0m")
         } else {
             print(formattedMessage)
         }
     }
 
+    private struct LogSettingsSnapshot {
+        let currentLevel: LogLevel
+        let asyncLogging: Bool
+        let logToFile: Bool
+        let sinks: [LogSink]
+        let logFormat: String
+        let logLevelWidth: Int
+        let categoryWidth: Int
+        let enableANSIColors: Bool
+    }
+
     private func log(level: LogLevel, message: String, error: (any Error)? = nil, file: String, line: Int) {
-        let currentLevel = LoggerConfiguration.shared.currentLogLevel
-        guard level.rawValue >= currentLevel.rawValue else { return }
-        let asyncLogging = LoggerConfiguration.shared.asynchronousLogging
-        let sinks = LoggerConfiguration.shared.sinks
+        let config = LoggerConfiguration.shared
+        let settings = config.lock.withLock {
+            LogSettingsSnapshot(
+                currentLevel: $0.currentLogLevel,
+                asyncLogging: $0.asynchronousLogging,
+                logToFile: $0.logToFile,
+                sinks: $0.sinks,
+                logFormat: $0.logFormat,
+                logLevelWidth: $0.logLevelWidth,
+                categoryWidth: $0.categoryWidth,
+                enableANSIColors: $0.enableANSIColors
+            )
+        }
+        guard level.rawValue >= settings.currentLevel.rawValue else { return }
         let event = LogEvent(
             level: level,
             category: categoryName,
@@ -2023,22 +2041,22 @@ public struct LogCategory: Sendable {
             timestamp: Date()
         )
 
-        if asyncLogging {
+        if settings.asyncLogging {
             LogCategory.logQueue.async {
-                let formattedMessage = self.formattedLog(level: level, message: message, file: file, line: line)
-                self.printFormatted(level, formattedMessage)
-                if LoggerConfiguration.shared.logToFile {
+                let formattedMessage = self.formattedLog(level: level, message: message, file: file, line: line, settings: settings)
+                self.printFormatted(level, formattedMessage, settings: settings)
+                if settings.logToFile {
                     LogWriter.write(formattedMessage)
                 }
-                for sink in sinks { sink.emit(event) }
+                for sink in settings.sinks { sink.emit(event) }
             }
         } else {
-            let formattedMessage = formattedLog(level: level, message: message, file: file, line: line)
-            printFormatted(level, formattedMessage)
-            if LoggerConfiguration.shared.logToFile {
+            let formattedMessage = formattedLog(level: level, message: message, file: file, line: line, settings: settings)
+            printFormatted(level, formattedMessage, settings: settings)
+            if settings.logToFile {
                 LogWriter.write(formattedMessage)
             }
-            for sink in sinks { sink.emit(event) }
+            for sink in settings.sinks { sink.emit(event) }
         }
     }
 
