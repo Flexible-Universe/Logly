@@ -655,10 +655,16 @@ public enum LogLevel: Int, Sendable {
 /// ```
 /// 
 /// ### Signal Logs
+///
+/// Signal handling is intentionally **not** routed through the `Logger`/file
+/// pipeline (see ``signalHandler(signalValue:)`` for why) and instead writes
+/// a minimal diagnostic line straight to stderr via `write(2)`:
 /// ```
-/// 2025-01-20T10:30:45Z - FAULT - Signal - MyApp.swift:89 - 💥 Caught signal: SIGSEGV (11)
+/// 💥 Logly: caught fatal signal SIGSEGV — terminating (see crash report for details)
 /// ```
-/// 
+/// For structured, persisted crash data use the system crash reporter /
+/// Console.app, or a crash-reporting SDK (e.g. Sentry via `LoglySentry`).
+///
 /// ## Integration Benefits
 /// 
 /// - **Persistent Storage**: Crashes are logged to files that survive application termination
@@ -838,9 +844,34 @@ public enum LoggerCrashHandler {
 
 // MARK: - C-compatible Signal Handler
 
+/// Writes a compile-time constant string directly to a file descriptor.
+///
+/// `StaticString`'s UTF-8 buffer is baked into the binary's read-only data
+/// segment, so reading it performs no heap allocation and takes no lock —
+/// unlike `String` interpolation, `Foundation` formatting, or `Dispatch`,
+/// none of which are safe to touch from inside a POSIX signal handler.
+/// `write(2)` itself is on the POSIX async-signal-safe function list.
+@inline(__always)
+private func signalSafeWrite(_ text: StaticString, to fd: Int32) {
+    text.withUTF8Buffer { buffer in
+        _ = write(fd, buffer.baseAddress, buffer.count)
+    }
+}
+
+/// Minimal, async-signal-safe fatal-signal handler.
+///
+/// - Important: This function runs on the signal-delivery thread, which may
+///   already hold the malloc heap lock, a `libdispatch` internal lock, or
+///   (if the crash originated inside ``LoggerConfiguration``) its own
+///   configuration queue. Routing through the full `Logger`/`Dispatch`/
+///   `Foundation` pipeline here — as earlier versions did — can therefore
+///   re-enter an already-held lock and deadlock the process instead of
+///   crashing it, which surfaces as a hung `xcodebuild test`/app process
+///   that never terminates. Only async-signal-safe operations are used
+///   below; no allocation, locking, or `Dispatch`/`Logger` calls.
 @_cdecl("signalHandler")
 private func signalHandler(signalValue: Int32) {
-    let signalName: String
+    let signalName: StaticString
     switch signalValue {
     case SIGABRT: signalName = "SIGABRT"
     case SIGILL:  signalName = "SIGILL"
@@ -848,11 +879,12 @@ private func signalHandler(signalValue: Int32) {
     case SIGFPE:  signalName = "SIGFPE"
     case SIGBUS:  signalName = "SIGBUS"
     case SIGPIPE: signalName = "SIGPIPE"
-    default:      signalName = "Unknown"
+    default:      signalName = "UNKNOWN"
     }
 
-    let message = "💥 Caught signal: \(signalName) (\(signalValue))"
-    Logger.custom(category: "Signal").fault(message)
+    signalSafeWrite("\n💥 Logly: caught fatal signal ", to: STDERR_FILENO)
+    signalSafeWrite(signalName, to: STDERR_FILENO)
+    signalSafeWrite(" — terminating (see crash report for details)\n", to: STDERR_FILENO)
 
     signal(signalValue, SIG_DFL)
     raise(signalValue)
