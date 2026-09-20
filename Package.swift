@@ -23,7 +23,7 @@ let package = Package(
             description: "Enables the LoglySentry Sentry backend and its sentry-cocoa dependency."),
     ],
     dependencies: [
-        .package(url: "https://github.com/getsentry/sentry-cocoa", from: "8.0.0"),
+        .package(url: "https://github.com/getsentry/sentry-cocoa", from: "9.29.0"),
     ],
     targets: [
         .target(
